@@ -1,0 +1,450 @@
+This program is built for a regular expression engine, which implements algorithms to work with NFAs, DFAs, and regular expressions.
+NFA stands for non-deterministic finite automaton; it takes symbols as input and works as a machine that can move to any combination of states in the machine.
+DFA stands for deterministic finite automaton; it takes symbols as input and works as a machine that can uniquely determine the state which the machine will move.
+The code is dividied into three parts: algorithms on NFAs, converting a DFA to an NFA, and converting/working with Regular Expressions.
+
+The complete code is provided below:
+
+(******************************************************************************)
+nfa.ml
+
+open List
+open Sets
+
+(*********)
+(* Types *)
+(*********)
+
+type ('q, 's) transition = 'q * 's option * 'q
+
+type ('q, 's) nfa_t = {
+  sigma: 's list;
+  qs: 'q list;
+  q0: 'q;
+  fs: 'q list;
+  delta: ('q, 's) transition list;
+}
+
+(***********)
+(* Utility *)
+(***********)
+
+(* explode converts a string to a character list *)
+let explode (s: string) : char list =
+  let rec exp i l =
+    if i < 0 then l else exp (i - 1) (s.[i] :: l)
+  in
+  exp (String.length s - 1) []
+
+(****************)
+(* Part 1: NFAs *)
+(****************)
+
+(* Returns true if the symbol s exists in the sigma list false otherwise. *)
+let rec move_helper_sigma (sigma: 's list) (s: 's option) : bool = match sigma with
+  | [] -> false
+  | h::t -> if Some h = s || s = None then true else move_helper_sigma t s
+;;
+
+(* An implementation of a folding function. *)
+let rec fold f a l = match l with
+  | [] -> a
+  | h::t -> fold f (f a h) t
+;;
+
+let rec move_helper_delta (delt: ('q, 's) transition list)
+  (q: 'q) (s: 's option) : 'q list = let (res: 'q list) = [] in match delt with
+    | [] -> res
+    | h::t -> (match h with
+      |(a, b, c) -> if a = q && b = s then res@[c] else move_helper_delta t q s)
+;;
+
+let move (nfa: ('q,'s) nfa_t) (qs: 'q list) (s: 's option) : 'q list =
+  let (empty_list: 'q list) = [] in
+  if move_helper_sigma nfa.sigma s then
+    fold (fun empty_list elm -> empty_list@move_helper_delta nfa.delta elm s)
+    empty_list qs
+  else empty_list
+;;
+
+let rec e_closure_helper (delt : ('q, 's) transition list) (q: 'q) : 'q list =
+  let (result_lst: 'q list) = [] in
+    fold (fun result_lst elm -> (match elm with
+      | (a, b, c) -> if a = q && b = None then result_lst@[c] else result_lst))
+      result_lst delt
+;;
+
+let e_closure (nfa: ('q,'s) nfa_t) (qs: 'q list) : 'q list =
+  let (result_lst: 'q list) = qs in
+    fold (fun result_lst elm -> result_lst@e_closure_helper nfa.delta elm)
+    result_lst qs
+;;
+
+let rec get_sym (delta: ('q, 's) transition list) : 's option list = let res = [] in
+  fold (fun res elm -> match elm with
+    | (a,b,c) -> res@[b]) res delta
+;;
+
+let rec accept_helper (nfa: ('q, char) nfa_t) (start: 'q list) (symbols: char list) : bool =
+  match symbols with
+    | [] -> let temp = e_closure nfa start in temp != [] &&
+        fold (fun acc elm -> (Sets.subset [elm] nfa.fs) || acc) false temp
+    | h::t -> accept_helper nfa (move nfa (e_closure nfa start) (Some h)) t
+;;
+
+(* Follow all the transitions and see if they are all valid;
+then check the last transition and see if it is in a final state. *)
+let accept (nfa: ('q, char) nfa_t) (s: string) : bool =
+  if s != "" then
+    let (symbols: 's list) = explode s in
+      accept_helper nfa [nfa.q0] symbols
+  else Sets.subset (e_closure nfa [nfa.q0]) nfa.fs
+;;
+
+(*******************************)
+(* Part 2: Subset Construction *)
+(*******************************)
+
+let rec all_possible_transitions (delt: ('q, 's) transition list)
+  (q: 'q) : 'q list = let (states: 'q list) = fold (fun states elm ->
+  match elm with |(a,b,c) -> if a = q && b != None then states@[c] else states) [] delt in
+  let (res: 'q list) = states in fold (fun res elm ->
+    res@e_closure_helper delt elm) res states
+;;
+
+let new_states (nfa: ('q,'s) nfa_t) (qs: 'q list) : 'q list list =
+  if qs = [] then let (eq: 'q list list) = [[]; []] in eq else
+  let (q: 'q list list) = fold (fun q elm ->
+  if all_possible_transitions nfa.delta elm != [] then q@[all_possible_transitions nfa.delta elm]
+    else q) [] qs in
+  if List.length q = 1 then q@[[]] else q
+;;
+
+let rec get_symbol (delta: ('q, 's) transition list) (q: 'q) : 's option =
+  let (s: 's option) = None in match delta with
+  | [] -> s
+  | h::t -> (match h with
+    | (a, b, c) -> if a = q && b != None then let s = b in s else get_symbol t q)
+;;
+
+let rec tran_exists (tran: ('q, 's) transition list) (s: 's option) : 's option=
+  let (ns: 's option) = None in match tran with
+    | [] -> ns
+    | h::t -> (match h with
+      (a, b, c) -> if b = s then let ns = b in ns else tran_exists t s)
+;;
+
+let new_trans (nfa: ('q,'s) nfa_t) (qs: 'q list) : ('q list, 's) transition list =
+  let (destination: 'q list) = [] in let (result: ('q list, 's) transition list) =
+  fold (fun result elm ->
+  result@[(qs, get_symbol nfa.delta elm, destination@all_possible_transitions nfa.delta elm)]) [] qs
+    in fold (fun result elm ->
+    if tran_exists result (Some elm) = None then result@[(qs, (Some elm), [])] else result) result nfa.sigma
+;;
+
+let rec new_finals_helper (fs: 'q list) (q: 'q) : bool =
+  match fs with
+  | [] -> false
+  | h::t -> if h = q then true else new_finals_helper t q
+;;
+
+let new_finals (nfa: ('q,'s) nfa_t) (qs: 'q list) : 'q list list =
+  if fold (fun acc elm -> new_finals_helper nfa.fs elm || acc) false qs then [qs] else []
+;;
+
+let rec nfa_to_dfa_step (nfa: ('q,'s) nfa_t) (dfa: ('q list, 's) nfa_t)
+    (work: 'q list list) : ('q list, 's) nfa_t =
+  failwith "unimplemented"
+
+let rec delta_helper (delta: ('q, 's) transition list) : ('q, 's) transition list =
+  fold (fun acc elm -> match elm with
+    |(a, b, c) -> if b = None && c = [] then let acc = Sets.remove (a,b,c) delta in acc else acc)
+    [] delta
+;;
+
+let nfa_to_dfa (nfa: ('q,'s) nfa_t) : ('q list, 's) nfa_t =
+  let dfa = {
+    sigma = nfa.sigma;
+    qs = nfa.q0@(fold (fun acc elm -> acc@elm) [] (new_states nfa nfa.qs));
+    q0 = (e_closure nfa [nfa.q0]);
+    fs = new_finals nfa nfa.qs;
+    delta = new_trans nfa nfa.qs
+    } in dfa
+;;
+
+(******************************************************************************)
+sets.ml
+
+let rec elem x a =
+  match a with
+  | h::t -> (h = x) || (elem x t)
+  | [] -> false
+
+let rec insert x a =
+  if not (elem x a) then x::a else a
+
+let insert_all (xs : 'a list) (a : 'a list) : 'a list =
+  List.fold_right insert xs a
+
+let rec subset a b =
+  match a with
+  | h::t -> (elem h b) && (subset t b)
+  | [] -> true
+
+let rec eq a b = (subset a b) && (subset b a)
+
+let rec remove x a =
+  match a with
+  | h::t -> if h = x then t else h::(remove x t)
+  | [] -> []
+
+(* Returns the set subtraction of b from a. *)
+let rec minus (a : 'a list) (b : 'a list) : 'a list =
+  match b with
+  | [] -> a
+  | x :: xt -> minus (remove x a) xt
+
+let rec union a b =
+  match a with
+  | h::t -> insert h (union t b)
+  | [] ->
+    (match b with
+     | h::t -> insert h (union [] t)
+     | [] -> [])
+
+let rec intersection a b =
+  match a with
+  | h::t -> if elem h b then insert h (intersection t b) else (intersection t b)
+  | [] -> []
+
+let rec product_help x b =
+  match b with
+  | h::t -> insert (x, h) (product_help x t)
+  | [] -> []
+
+let rec product a b =
+  match a with
+  | h::t -> union (product_help h b) (product t b)
+  | [] -> []
+
+let rec cat x a =
+  match a with
+  | [] -> []
+  | h::t -> (x,h)::(cat x t)
+
+let rec diff a b =  
+  match b with
+  | [] -> a
+  | h::t -> diff (remove h a) t
+  
+  
+(******************************************************************************)
+regexp.ml
+
+open List
+open Nfa
+
+(*********)
+(* Types *)
+(*********)
+
+type regexp_t =
+  | Empty_String
+  | Char of char
+  | Union of regexp_t * regexp_t
+  | Concat of regexp_t * regexp_t
+  | Star of regexp_t
+
+(***********)
+(* Utility *)
+(***********)
+
+let fresh =
+  let cntr = ref 0 in
+  fun () ->
+    cntr := !cntr + 1 ;
+    !cntr
+
+(*******************************)
+(* Part 3: Regular Expressions *)
+(*******************************)
+
+let rec fold f a l = match l with
+  | [] -> a
+  | h::t -> fold f (f a h) t
+;;
+
+let rec union_helper a b = match b with
+  | [] -> true
+  | h::t -> if h = a then false else union_helper a t
+;; 
+
+let rec union a b = match b with
+  | [] -> a
+  | h::t -> if union_helper h a then union (h::a) t else union a t
+;;
+
+let rec regexp_to_nfa_helper (regexp: regexp_t) : (int, char) nfa_t =
+  match regexp with
+  | Empty_String -> {
+    sigma = [];
+    qs = [0];
+    q0 = 0;
+    fs = [0];
+    delta = [(0, None, 0)] }
+  | Char (ch) ->
+      let ss = fresh() in let es = fresh() in {
+        sigma = [ch];
+        qs = [ss; es];
+        q0 = ss;
+        fs = [es];
+        delta = [(ss, (Some ch), es)] }
+  | Union (regex1, regex2) ->
+      let r1 = regexp_to_nfa_helper regex1 in
+      let r2 = regexp_to_nfa_helper regex2 in
+      let ss = 0 in let es = fresh() in {
+        sigma = (union (r1.sigma) (r2.sigma));
+        qs = ([ss]@(union (r1.qs) (r2.qs))@[es]);
+        q0 = ss;
+        fs = [es];
+        delta = [(ss, None, r1.q0); (ss, None, r2.q0)]@(r1.delta)@(r2.delta)@
+          ((fold (fun acc elm -> [(elm, None, es)]@acc) [] r1.fs)@
+          (fold (fun acc elm -> [(elm, None, es)]@acc) [] r2.fs)) }
+  | Concat (regex1, regex2) -> 
+      let r1 = regexp_to_nfa_helper regex1 in
+      let r2 = regexp_to_nfa_helper regex2 in {
+        sigma = (union (r1.sigma) (r2.sigma));
+        qs = (union (r1.qs) (r2.qs));
+        q0 = r1.q0;
+        fs = r2.fs;
+        delta = (r1.delta)@(r2.delta)@
+          (fold (fun acc elm -> [elm, None, r2.q0]@acc) [] (r1.fs)) }
+  | Star (regex) -> 
+      let ss = fresh() in
+      let r = regexp_to_nfa_helper regex in
+      let es = fresh() in {
+        sigma = (r.sigma);
+        qs = [ss]@(r.qs)@[es];
+        q0 = ss;
+        fs = [es];
+        delta = [(ss, None, r.q0)]@[(ss, None, es)]@(r.delta)@
+          (fold (fun acc elm -> [(elm, None, es)]@acc) [] (r.fs))@[(es, None, ss)] }
+;;
+
+let regexp_to_nfa (regexp: regexp_t) : (int, char) nfa_t =
+  regexp_to_nfa_helper regexp
+;;
+
+(*****************************************************************)
+(* Below this point is parser code that YOU DO NOT NEED TO TOUCH *)
+(*****************************************************************)
+
+exception IllegalExpression of string
+
+(* Scanner *)
+type token =
+  | Tok_Char of char
+  | Tok_Epsilon
+  | Tok_Union
+  | Tok_Star
+  | Tok_LParen
+  | Tok_RParen
+  | Tok_END
+
+let tokenize str =
+  let re_var = Str.regexp "[a-z]" in
+  let re_epsilon = Str.regexp "E" in
+  let re_union = Str.regexp "|" in
+  let re_star = Str.regexp "*" in
+  let re_lparen = Str.regexp "(" in
+  let re_rparen = Str.regexp ")" in
+  let rec tok pos s =
+    if pos >= String.length s then [Tok_END]
+    else if Str.string_match re_var s pos then
+      let token = Str.matched_string s in
+      Tok_Char token.[0] :: tok (pos + 1) s
+    else if Str.string_match re_epsilon s pos then
+      Tok_Epsilon :: tok (pos + 1) s
+    else if Str.string_match re_union s pos then Tok_Union :: tok (pos + 1) s
+    else if Str.string_match re_star s pos then Tok_Star :: tok (pos + 1) s
+    else if Str.string_match re_lparen s pos then Tok_LParen :: tok (pos + 1) s
+    else if Str.string_match re_rparen s pos then Tok_RParen :: tok (pos + 1) s
+    else raise (IllegalExpression ("tokenize: " ^ s))
+  in
+  tok 0 str
+
+let tok_to_str t =
+  match t with
+  | Tok_Char v -> Char.escaped v
+  | Tok_Epsilon -> "E"
+  | Tok_Union -> "|"
+  | Tok_Star -> "*"
+  | Tok_LParen -> "("
+  | Tok_RParen -> ")"
+  | Tok_END -> "END"
+
+(*
+   S -> A Tok_Union S | A
+   A -> B A | B
+   B -> C Tok_Star | C
+   C -> Tok_Char | Tok_Epsilon | Tok_LParen S Tok_RParen
+
+   FIRST(S) = Tok_Char | Tok_Epsilon | Tok_LParen
+   FIRST(A) = Tok_Char | Tok_Epsilon | Tok_LParen
+   FIRST(B) = Tok_Char | Tok_Epsilon | Tok_LParen
+   FIRST(C) = Tok_Char | Tok_Epsilon | Tok_LParen
+ *)
+
+let parse_regexp (l : token list) =
+  let lookahead tok_list =
+    match tok_list with
+    | [] -> raise (IllegalExpression "lookahead")
+    | h :: t -> (h, t)
+  in
+  let rec parse_S l =
+    let a1, l1 = parse_A l in
+    let t, n = lookahead l1 in
+    match t with
+    | Tok_Union ->
+        let a2, l2 = parse_S n in
+        (Union (a1, a2), l2)
+    | _ -> (a1, l1)
+  and parse_A l =
+    let a1, l1 = parse_B l in
+    let t, n = lookahead l1 in
+    match t with
+    | Tok_Char c ->
+        let a2, l2 = parse_A l1 in
+        (Concat (a1, a2), l2)
+    | Tok_Epsilon ->
+        let a2, l2 = parse_A l1 in
+        (Concat (a1, a2), l2)
+    | Tok_LParen ->
+        let a2, l2 = parse_A l1 in
+        (Concat (a1, a2), l2)
+    | _ -> (a1, l1)
+  and parse_B l =
+    let a1, l1 = parse_C l in
+    let t, n = lookahead l1 in
+    match t with Tok_Star -> (Star a1, n) | _ -> (a1, l1)
+  and parse_C l =
+    let t, n = lookahead l in
+    match t with
+    | Tok_Char c -> (Char c, n)
+    | Tok_Epsilon -> (Empty_String, n)
+    | Tok_LParen ->
+        let a1, l1 = parse_S n in
+        let t2, n2 = lookahead l1 in
+        if t2 = Tok_RParen then (a1, n2)
+        else raise (IllegalExpression "parse_C 1")
+    | _ -> raise (IllegalExpression "parse_C 2")
+  in
+  let rxp, toks = parse_S l in
+  match toks with
+  | [Tok_END] -> rxp
+  | _ -> raise (IllegalExpression "parse didn't consume all tokens")
+
+
+let string_to_regexp str = parse_regexp @@ tokenize str
+
+let string_to_nfa str = regexp_to_nfa @@ string_to_regexp str
